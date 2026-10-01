@@ -3833,6 +3833,74 @@ fn is_sandbox_identity_mismatch(status: &Status) -> bool {
             .is_some_and(|info| info.reason == "SANDBOX_IDENTITY_MISMATCH")
 }
 
+/// List every sandbox in one workspace.
+async fn list_workspace_sandboxes(
+    client: &mut crate::tls::GrpcClient,
+    workspace: &str,
+) -> Result<Vec<Sandbox>> {
+    let mut page_token = String::new();
+    let mut sandboxes = Vec::new();
+    loop {
+        let response = client
+            .list_sandboxes(ListSandboxesRequest {
+                page_size: 1000,
+                page_token,
+                label_selector: String::new(),
+                workspace_scope: Some(openshell_core::proto::workspace_selector(workspace)),
+            })
+            .await
+            .into_diagnostic()?
+            .into_inner();
+        sandboxes.extend(response.sandboxes);
+        if response.next_page_token.is_empty() {
+            return Ok(sandboxes);
+        }
+        page_token = response.next_page_token;
+    }
+}
+
+/// Delete the sandbox with an immutable ID.
+///
+/// The gateway addresses deletion by name, so this looks up the name that
+/// currently has `sandbox_id` and sends a delete conditioned on that ID. If the
+/// sandbox is deleted or replaced between the lookup and the delete, the
+/// gateway refuses, and the sandbox with this ID is already gone.
+pub async fn sandbox_delete_by_id(
+    server: &str,
+    sandbox_id: &str,
+    workspace: &str,
+    tls: &TlsOptions,
+    gateway: &str,
+) -> Result<()> {
+    if sandbox_id.trim().is_empty() {
+        return Err(miette::miette!("--id must not be empty"));
+    }
+    let mut client = grpc_client(server, tls).await?;
+    let Some(sandbox) = list_workspace_sandboxes(&mut client, workspace)
+        .await?
+        .into_iter()
+        .find(|sandbox| sandbox.object_id() == sandbox_id)
+    else {
+        println!(
+            "{} Sandbox {sandbox_id} already deleted",
+            "✓".green().bold()
+        );
+        return Ok(());
+    };
+    let name = sandbox.object_name();
+    match delete_sandbox_entry(&mut client, workspace, gateway, name, Some(sandbox_id)).await {
+        SandboxDeleteEntry::Deleted => Ok(()),
+        SandboxDeleteEntry::Replaced => {
+            println!(
+                "{} Sandbox {sandbox_id} already deleted",
+                "✓".green().bold()
+            );
+            Ok(())
+        }
+        SandboxDeleteEntry::Failed => aggregate_delete_failures("sandbox", &[name.to_string()]),
+    }
+}
+
 /// Delete a sandbox by name, or all sandboxes when `all` is true.
 ///
 /// With `expected_sandbox_id`, the single named sandbox is deleted only if it
@@ -3854,25 +3922,7 @@ pub async fn sandbox_delete(
     let mut client = grpc_client(server, tls).await?;
 
     let names_to_delete: Vec<String> = if all {
-        let mut page_token = String::new();
-        let mut sandboxes = Vec::new();
-        loop {
-            let response = client
-                .list_sandboxes(ListSandboxesRequest {
-                    page_size: 1000,
-                    page_token,
-                    label_selector: String::new(),
-                    workspace_scope: Some(openshell_core::proto::workspace_selector(workspace)),
-                })
-                .await
-                .into_diagnostic()?
-                .into_inner();
-            sandboxes.extend(response.sandboxes);
-            if response.next_page_token.is_empty() {
-                break;
-            }
-            page_token = response.next_page_token;
-        }
+        let sandboxes = list_workspace_sandboxes(&mut client, workspace).await?;
         if sandboxes.is_empty() {
             println!("No sandboxes to delete.");
             return Ok(());

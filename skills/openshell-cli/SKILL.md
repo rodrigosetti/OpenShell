@@ -465,14 +465,15 @@ openshell logs my-sandbox --since 5m
 openshell sandbox delete my-sandbox
 openshell sandbox delete sandbox-1 sandbox-2 sandbox-3   # Multiple at once
 openshell sandbox delete --all
+openshell sandbox delete --id <sandbox-id>               # This sandbox, never a same-name replacement
 ```
 
 `deletion accepted` means cleanup is still pending. Inspect the sandbox until
 it disappears before assuming completion. An already-absent sandbox succeeds;
 missing workspaces and authorization failures remain errors. Do not blindly
-retry by name if another process might have recreated that name; pass
-`--expected-id <id>` (the `Id` from `openshell sandbox get`) so the delete fails
-instead of removing a same-name replacement.
+retry by name if another process might have recreated that name; use
+`openshell sandbox delete --id <id>` (the `Id` from `openshell sandbox get`) so
+a same-name replacement is never removed.
 
 ### Stop and start sandboxes
 

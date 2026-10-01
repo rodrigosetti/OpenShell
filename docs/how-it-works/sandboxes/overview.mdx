@@ -909,16 +909,23 @@ When a multi-sandbox delete fails for one entry, the CLI reports that sandbox's
 failure and continues with the remaining names. The command exits with an error
 after it attempts every requested deletion if any entry failed.
 
-To delete a sandbox only while its name still refers to the sandbox you
-inspected, pass the ID that `openshell sandbox get` prints:
+To delete a specific sandbox rather than whichever sandbox currently has a
+name, pass the ID that `openshell sandbox get` prints:
+
+```shell
+openshell sandbox delete --id <sandbox-id>
+```
+
+A same-name replacement created after you looked up the ID is never deleted. If
+no sandbox has that ID, the command reports it as already deleted.
+
+To also require that a name still refers to that ID, use `--expected-id` with
+exactly one sandbox name. If the name now belongs to a different sandbox, the
+command fails and deletes nothing:
 
 ```shell
 openshell sandbox delete my-sandbox --expected-id <sandbox-id>
 ```
-
-If the name now belongs to a different sandbox, such as a replacement created
-after you looked it up, the command fails and deletes nothing. `--expected-id`
-accepts exactly one sandbox name.
 
 ## Sandbox Lifecycle
 

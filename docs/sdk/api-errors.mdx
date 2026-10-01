@@ -288,7 +288,7 @@ delete by name.
 
 | Client | Conditional deletion |
 |---|---|
-| CLI | `openshell sandbox delete NAME --expected-id ID`. Cleanup after `sandbox create --no-keep` supplies the created sandbox's ID automatically. |
+| CLI | `openshell sandbox delete --id ID`, or `openshell sandbox delete NAME --expected-id ID`. Cleanup after `sandbox create --no-keep` supplies the created sandbox's ID automatically. |
 | TUI | Deleting a sandbox supplies the selected row's ID automatically. |
 | Rust | `client.delete_sandbox(name, SandboxDeleteOptions { expected_sandbox_id: Some(id), ..Default::default() }).await?` |
 | Python | `client.delete(name, workspace=workspace, expected_sandbox_id=id)`. `SandboxSession.delete` and managed-sandbox cleanup supply the session's ID automatically. |
