@@ -23,6 +23,27 @@ pub struct DeleteOptions {
     pub allow_missing: bool,
 }
 
+/// Sandbox deletion options.
+///
+/// `expected_sandbox_id` makes the deletion conditional: the gateway deletes
+/// the sandbox only if the name still resolves to that immutable ID, and
+/// otherwise fails with `FAILED_PRECONDITION` and reason
+/// `SANDBOX_IDENTITY_MISMATCH` instead of deleting a same-name replacement.
+#[derive(Clone, Debug, Default)]
+pub struct SandboxDeleteOptions {
+    pub allow_missing: bool,
+    pub expected_sandbox_id: Option<String>,
+}
+
+impl From<DeleteOptions> for SandboxDeleteOptions {
+    fn from(opts: DeleteOptions) -> Self {
+        Self {
+            allow_missing: opts.allow_missing,
+            expected_sandbox_id: None,
+        }
+    }
+}
+
 /// A deletion acknowledgement is not necessarily completion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]

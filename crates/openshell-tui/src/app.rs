@@ -3258,6 +3258,30 @@ impl App {
     // Helpers
     // ------------------------------------------------------------------
 
+    /// Build a delete request for the selected sandbox row.
+    ///
+    /// The request carries the row's sandbox ID, so deleting from a stale list
+    /// fails instead of removing a same-name replacement.
+    pub fn selected_sandbox_delete_request(
+        &self,
+    ) -> Option<openshell_core::proto::DeleteSandboxRequest> {
+        let name = self.selected_sandbox_name()?.to_string();
+        let expected_sandbox_id = self
+            .sandbox_ids
+            .get(self.sandbox_selected)
+            .filter(|id| !id.is_empty())
+            .cloned();
+        Some(openshell_core::proto::DeleteSandboxRequest {
+            workspace_scope: Some(openshell_core::proto::workspace_selector(
+                self.selected_sandbox_workspace(),
+            )),
+            request_id: String::new(),
+            allow_missing: true,
+            expected_sandbox_id,
+            name,
+        })
+    }
+
     /// Get the name of the currently selected sandbox.
     pub fn selected_sandbox_name(&self) -> Option<&str> {
         self.sandbox_names
@@ -3651,6 +3675,31 @@ mod tests {
             "default".to_string(),
             crate::theme::Theme::dark(),
         )
+    }
+
+    #[tokio::test]
+    async fn selected_sandbox_delete_request_binds_the_row_identity() {
+        let mut app = test_app();
+        app.sandbox_ids = vec!["sandbox-a".to_string(), "sandbox-b".to_string()];
+        app.sandbox_names = vec!["alpha".to_string(), "beta".to_string()];
+        app.sandbox_workspaces = vec!["default".to_string(), "staging".to_string()];
+        app.sandbox_selected = 1;
+
+        let request = app.selected_sandbox_delete_request().unwrap();
+
+        assert_eq!(request.name, "beta");
+        assert_eq!(request.expected_sandbox_id.as_deref(), Some("sandbox-b"));
+        assert!(request.allow_missing);
+        assert_eq!(
+            request.workspace_scope,
+            Some(openshell_core::proto::workspace_selector("staging"))
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_sandbox_delete_request_requires_a_selection() {
+        let app = test_app();
+        assert!(app.selected_sandbox_delete_request().is_none());
     }
 
     fn provider_profile(

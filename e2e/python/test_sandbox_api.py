@@ -8,9 +8,12 @@ import threading
 import uuid
 from typing import TYPE_CHECKING
 
+import grpc
+import pytest
 from google.protobuf import duration_pb2
 
 from openshell._proto import datamodel_pb2, openshell_pb2, sandbox_pb2
+from openshell.errors import GatewayError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -77,6 +80,54 @@ def test_mutation_replay_preserves_sandbox_lifecycle_and_replacement(
         assert replacement.id != original
         assert replay(stub.DeleteSandbox, delete) == deleted
         assert sandbox_client.get(name, workspace="default").id == replacement.id
+    finally:
+        with contextlib.suppress(Exception):
+            sandbox_client.delete(name, workspace="default", allow_missing=True)
+            sandbox_client.wait_deleted(name, workspace="default", timeout_seconds=120)
+
+
+def test_conditional_delete_preserves_same_name_replacement(
+    sandbox_client: SandboxClient,
+) -> None:
+    name = f"cond-del-{uuid.uuid4().hex[:8]}"
+    try:
+        original = sandbox_client.create(workspace="default", name=name)
+        sandbox_client.wait_ready(name, workspace="default", timeout_seconds=300)
+        # Another client replaces the sandbox after this client observed it.
+        sandbox_client.delete(name, workspace="default")
+        sandbox_client.wait_deleted(
+            name,
+            workspace="default",
+            timeout_seconds=120,
+            expected_sandbox_id=original.id,
+        )
+        replacement = sandbox_client.create(workspace="default", name=name)
+        assert replacement.id != original.id
+
+        # Cleanup based on the stale observation must not delete the replacement.
+        for allow_missing in (False, True):
+            with pytest.raises(GatewayError) as caught:
+                sandbox_client.delete(
+                    name,
+                    workspace="default",
+                    allow_missing=allow_missing,
+                    expected_sandbox_id=original.id,
+                )
+            assert caught.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+            assert caught.value.error_info is not None
+            assert caught.value.error_info.reason == "SANDBOX_IDENTITY_MISMATCH"
+        assert sandbox_client.get(name, workspace="default").id == replacement.id
+
+        deleted = sandbox_client.delete(
+            name, workspace="default", expected_sandbox_id=replacement.id
+        )
+        assert deleted.sandbox_id == replacement.id
+        sandbox_client.wait_deleted(
+            name,
+            workspace="default",
+            timeout_seconds=120,
+            expected_sandbox_id=replacement.id,
+        )
     finally:
         with contextlib.suppress(Exception):
             sandbox_client.delete(name, workspace="default", allow_missing=True)
@@ -210,7 +261,9 @@ def test_interactive_exec_drains_output_after_request_eof(
             yield openshell_pb2.ExecSandboxInput(
                 start=openshell_pb2.ExecSandboxRequest(
                     sandbox=sb.sandbox.name,
-                    workspace_scope=datamodel_pb2.WorkspaceSelector(workspace="default"),
+                    workspace_scope=datamodel_pb2.WorkspaceSelector(
+                        workspace="default"
+                    ),
                     command=[
                         "/bin/sh",
                         "-c",

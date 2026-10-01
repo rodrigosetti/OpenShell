@@ -84,6 +84,19 @@ describe('deletion outcomes', () => {
     });
     expect(flags).toEqual([false, true]);
   });
+
+  it('forwards an expected sandbox ID only when supplied', async () => {
+    const expected: (string | undefined)[] = [];
+    const sandbox = client({
+      deleteSandbox: (req) => {
+        expected.push(req.expectedSandboxId);
+        return { outcome: 1, sandboxId: 'sb-observed' };
+      },
+    });
+    await sandbox.delete('sandbox');
+    await sandbox.delete('sandbox', { expectedSandboxId: 'sb-observed' });
+    expect(expected).toEqual([undefined, 'sb-observed']);
+  });
 });
 
 type ScopedRequest = {

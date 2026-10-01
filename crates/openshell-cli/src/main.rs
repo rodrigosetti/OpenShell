@@ -1667,6 +1667,11 @@ enum SandboxCommands {
         /// Delete all sandboxes.
         #[arg(long, conflicts_with = "names")]
         all: bool,
+
+        /// Delete only if the name still resolves to this sandbox ID. Fails
+        /// instead of deleting a same-name replacement. Requires one NAME.
+        #[arg(long = "expected-id", value_name = "ID", conflicts_with = "all")]
+        expected_id: Option<String>,
     },
 
     /// Stop a sandbox while preserving its workspace.
@@ -3560,11 +3565,16 @@ async fn run_async() -> Result<()> {
                             )
                             .await?;
                         }
-                        SandboxCommands::Delete { names, all } => {
+                        SandboxCommands::Delete {
+                            names,
+                            all,
+                            expected_id,
+                        } => {
                             run::sandbox_delete(
                                 endpoint,
                                 &names,
                                 all,
+                                expected_id.as_deref(),
                                 &cli.workspace,
                                 &tls,
                                 &ctx.name,
@@ -5539,6 +5549,38 @@ mod tests {
                 })
             })
         ));
+    }
+
+    #[test]
+    fn sandbox_delete_accepts_expected_id_but_not_with_all() {
+        let cli = Cli::try_parse_from([
+            "openshell",
+            "sandbox",
+            "delete",
+            "my-box",
+            "--expected-id",
+            "sandbox-observed",
+        ])
+        .expect("sandbox delete --expected-id should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Delete {
+                    expected_id: Some(ref id),
+                    ..
+                })
+            }) if id == "sandbox-observed"
+        ));
+
+        let result = Cli::try_parse_from([
+            "openshell",
+            "sandbox",
+            "delete",
+            "--all",
+            "--expected-id",
+            "sandbox-observed",
+        ]);
+        assert!(result.is_err(), "--expected-id and --all should conflict");
     }
 
     #[test]

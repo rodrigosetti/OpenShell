@@ -2141,15 +2141,21 @@ impl ComputeRuntime {
         workspace: &str,
         name: &str,
     ) -> Result<DeleteSandboxResult, Status> {
-        self.delete_sandbox_allow_missing(workspace, name, false)
+        self.delete_sandbox_allow_missing(workspace, name, false, None)
             .await
     }
 
+    /// Delete the sandbox that `name` currently resolves to.
+    ///
+    /// With `expected_sandbox_id`, the resolved sandbox must have that ID. The
+    /// delete is then pinned to the ID, so a same-name replacement created
+    /// before or after resolution is never deleted by this request.
     pub(crate) async fn delete_sandbox_allow_missing(
         &self,
         workspace: &str,
         name: &str,
         allow_missing: bool,
+        expected_sandbox_id: Option<&str>,
     ) -> Result<DeleteSandboxResult, Status> {
         // Resolve and acquire both request-side locks before spawning the
         // owned worker. Cancellation while any of these awaits is pending is
@@ -2168,6 +2174,14 @@ impl ComputeRuntime {
             }
             return Err(Status::not_found("sandbox not found"));
         };
+        if let Some(expected) = expected_sandbox_id
+            && candidate.object_id() != expected
+        {
+            return Err(openshell_core::rpc_error::failed_precondition(
+                "SANDBOX_IDENTITY_MISMATCH",
+                "sandbox name resolves to a different sandbox than expected_sandbox_id",
+            ));
+        }
         let target = SandboxDeleteTarget {
             sandbox_id: candidate.object_id().to_string(),
             sandbox_name: candidate.object_name().to_string(),

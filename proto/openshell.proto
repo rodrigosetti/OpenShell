@@ -1431,6 +1431,13 @@ message DeleteSandboxRequest {
   openshell.datamodel.v1.WorkspaceSelector workspace_scope = 2;
   // Canonical sandbox name.
   string name = 1;
+  // Optional immutable sandbox ID (`metadata.id`) the caller expects `name` to
+  // resolve to. When present, the gateway deletes only that sandbox and
+  // returns FAILED_PRECONDITION with reason SANDBOX_IDENTITY_MISMATCH if the
+  // name resolves to a different sandbox, such as a same-name replacement.
+  // An explicitly empty value is rejected. When absent, deletion targets
+  // whichever sandbox currently has the name.
+  optional string expected_sandbox_id = 5;
   // Succeed with ALREADY_ABSENT if the target is missing. Does not wait for
   // asynchronous cleanup and does not suppress authorization or parent errors.
   bool allow_missing = 3;

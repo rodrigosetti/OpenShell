@@ -398,7 +398,7 @@ fn validate_memory_quantity(value: &str) -> Result<String> {
 
 async fn finalize_sandbox_create_session(
     server: &str,
-    sandbox_name: &str,
+    sandbox: &Sandbox,
     persist: bool,
     session_result: Result<i32>,
     workspace: &str,
@@ -409,8 +409,8 @@ async fn finalize_sandbox_create_session(
         return session_result;
     }
 
-    let names = [sandbox_name.to_string()];
-    if let Err(err) = sandbox_delete(server, &names, false, workspace, tls, gateway).await {
+    let sandbox_name = sandbox.object_name();
+    if let Err(err) = delete_ephemeral_sandbox(server, sandbox, workspace, tls, gateway).await {
         if let Ok(exit_code) = session_result.as_ref() {
             return Err(miette::miette!(
                 "sandbox command exited with status {exit_code}, but ephemeral cleanup failed: {err}"
@@ -420,6 +420,26 @@ async fn finalize_sandbox_create_session(
     }
 
     session_result
+}
+
+/// Delete the sandbox this command created, never a same-name replacement.
+///
+/// A replacement means the created sandbox is already gone, so cleanup has
+/// nothing left to do.
+async fn delete_ephemeral_sandbox(
+    server: &str,
+    sandbox: &Sandbox,
+    workspace: &str,
+    tls: &TlsOptions,
+    gateway: &str,
+) -> Result<()> {
+    let name = sandbox.object_name();
+    let expected_sandbox_id = Some(sandbox.object_id()).filter(|id| !id.is_empty());
+    let mut client = grpc_client(server, tls).await?;
+    match delete_sandbox_entry(&mut client, workspace, gateway, name, expected_sandbox_id).await {
+        SandboxDeleteEntry::Deleted | SandboxDeleteEntry::Replaced => Ok(()),
+        SandboxDeleteEntry::Failed => aggregate_delete_failures("sandbox", &[name.to_string()]),
+    }
 }
 
 /// Configuration for creating a sandbox via the CLI.
@@ -1192,7 +1212,7 @@ pub async fn sandbox_create(
 
             finalize_sandbox_create_session(
                 &effective_server,
-                &sandbox_name,
+                &sandbox,
                 persist,
                 connect_result,
                 workspace,
@@ -1218,7 +1238,7 @@ pub async fn sandbox_create(
             .await;
             finalize_sandbox_create_session(
                 &effective_server,
-                &sandbox_name,
+                &sandbox,
                 persist,
                 connect_result,
                 workspace,
@@ -1251,7 +1271,7 @@ pub async fn sandbox_create(
             };
             finalize_sandbox_create_session(
                 &effective_server,
-                &sandbox_name,
+                &sandbox,
                 persist
                     || last_sandbox
                         .status
@@ -3714,15 +3734,123 @@ fn labels_display(labels: &HashMap<String, String>) -> String {
     pairs.join(", ")
 }
 
+/// Result of deleting one named sandbox.
+#[derive(Debug, PartialEq, Eq)]
+enum SandboxDeleteEntry {
+    /// Deleted, deletion accepted, or already absent.
+    Deleted,
+    /// The name now identifies a different sandbox than the expected ID, so
+    /// nothing was deleted.
+    Replaced,
+    Failed,
+}
+
+/// Delete one named sandbox and report the outcome on the terminal.
+///
+/// With `expected_sandbox_id`, the gateway deletes only that sandbox, and port
+/// forwards for the name are stopped only after it confirms the identity.
+async fn delete_sandbox_entry(
+    client: &mut crate::tls::GrpcClient,
+    workspace: &str,
+    gateway: &str,
+    name: &str,
+    expected_sandbox_id: Option<&str>,
+) -> SandboxDeleteEntry {
+    let stop_forwards = || {
+        if let Ok(stopped) = stop_forwards_for_sandbox(workspace, name) {
+            for port in stopped {
+                eprintln!(
+                    "{} Stopped forward of port {port} for sandbox {name}",
+                    "✓".green().bold(),
+                );
+            }
+        }
+    };
+    // Stop any background port forwards for this sandbox before deleting.
+    if expected_sandbox_id.is_none() {
+        stop_forwards();
+    }
+
+    let response = match client
+        .delete_sandbox(DeleteSandboxRequest {
+            request_id: String::new(),
+            allow_missing: true,
+            expected_sandbox_id: expected_sandbox_id.map(str::to_string),
+            name: name.to_string(),
+            workspace_scope: Some(openshell_core::proto::workspace_selector(
+                workspace.to_string(),
+            )),
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(status) if is_sandbox_identity_mismatch(&status) => {
+            eprintln!(
+                "{} Sandbox {name} now refers to a different sandbox; it was not deleted",
+                "!".red().bold()
+            );
+            return SandboxDeleteEntry::Replaced;
+        }
+        Err(status) => {
+            eprintln!(
+                "{} Failed to delete sandbox {name}: {status}",
+                "!".red().bold()
+            );
+            return SandboxDeleteEntry::Failed;
+        }
+    };
+
+    match response.into_inner().outcome() {
+        DeletionOutcome::Completed => println!("{} Deleted sandbox {name}", "✓".green().bold()),
+        DeletionOutcome::Accepted => println!(
+            "{} Sandbox {name} deletion accepted; cleanup is pending",
+            "✓".green().bold()
+        ),
+        DeletionOutcome::AlreadyAbsent => {
+            println!("{} Sandbox {name} already deleted", "✓".green().bold());
+        }
+        DeletionOutcome::Unspecified => {
+            eprintln!(
+                "{} Unsupported deletion outcome for sandbox {name}",
+                "!".red().bold()
+            );
+            return SandboxDeleteEntry::Failed;
+        }
+    }
+    if expected_sandbox_id.is_some() {
+        stop_forwards();
+    }
+    clear_last_sandbox_if_matches(gateway, workspace, name);
+    SandboxDeleteEntry::Deleted
+}
+
+fn is_sandbox_identity_mismatch(status: &Status) -> bool {
+    use openshell_core::rpc_error::StatusExt;
+    status.code() == Code::FailedPrecondition
+        && status
+            .get_error_details()
+            .error_info()
+            .is_some_and(|info| info.reason == "SANDBOX_IDENTITY_MISMATCH")
+}
+
 /// Delete a sandbox by name, or all sandboxes when `all` is true.
+///
+/// With `expected_sandbox_id`, the single named sandbox is deleted only if it
+/// still has that ID, so a same-name replacement is never deleted.
 pub async fn sandbox_delete(
     server: &str,
     names: &[String],
     all: bool,
+    expected_sandbox_id: Option<&str>,
     workspace: &str,
     tls: &TlsOptions,
     gateway: &str,
 ) -> Result<()> {
+    if expected_sandbox_id.is_some() && (all || names.len() != 1) {
+        return Err(miette::miette!(
+            "--expected-id requires exactly one sandbox name"
+        ));
+    }
     let mut client = grpc_client(server, tls).await?;
 
     let names_to_delete: Vec<String> = if all {
@@ -3759,57 +3887,11 @@ pub async fn sandbox_delete(
 
     let mut failures = Vec::new();
     for name in &names_to_delete {
-        // Stop any background port forwards for this sandbox before deleting.
-        if let Ok(stopped) = stop_forwards_for_sandbox(workspace, name) {
-            for port in stopped {
-                eprintln!(
-                    "{} Stopped forward of port {port} for sandbox {name}",
-                    "✓".green().bold(),
-                );
-            }
-        }
-
-        let response = match client
-            .delete_sandbox(DeleteSandboxRequest {
-                request_id: String::new(),
-                allow_missing: true,
-                name: name.clone(),
-                workspace_scope: Some(openshell_core::proto::workspace_selector(
-                    workspace.to_string(),
-                )),
-            })
-            .await
+        if delete_sandbox_entry(&mut client, workspace, gateway, name, expected_sandbox_id).await
+            != SandboxDeleteEntry::Deleted
         {
-            Ok(response) => response,
-            Err(status) => {
-                eprintln!(
-                    "{} Failed to delete sandbox {name}: {status}",
-                    "!".red().bold()
-                );
-                failures.push(name.clone());
-                continue;
-            }
-        };
-
-        match response.into_inner().outcome() {
-            DeletionOutcome::Completed => println!("{} Deleted sandbox {name}", "✓".green().bold()),
-            DeletionOutcome::Accepted => println!(
-                "{} Sandbox {name} deletion accepted; cleanup is pending",
-                "✓".green().bold()
-            ),
-            DeletionOutcome::AlreadyAbsent => {
-                println!("{} Sandbox {name} already deleted", "✓".green().bold());
-            }
-            DeletionOutcome::Unspecified => {
-                eprintln!(
-                    "{} Unsupported deletion outcome for sandbox {name}",
-                    "!".red().bold()
-                );
-                failures.push(name.clone());
-                continue;
-            }
+            failures.push(name.clone());
         }
-        clear_last_sandbox_if_matches(gateway, workspace, name);
     }
 
     aggregate_delete_failures("sandbox", &failures)

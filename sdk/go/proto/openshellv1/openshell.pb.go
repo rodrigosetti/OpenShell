@@ -4484,6 +4484,13 @@ type DeleteSandboxRequest struct {
 	WorkspaceScope *datamodelv1.WorkspaceSelector `protobuf:"bytes,2,opt,name=workspace_scope,json=workspaceScope,proto3" json:"workspace_scope,omitempty"`
 	// Canonical sandbox name.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Optional immutable sandbox ID (`metadata.id`) the caller expects `name` to
+	// resolve to. When present, the gateway deletes only that sandbox and
+	// returns FAILED_PRECONDITION with reason SANDBOX_IDENTITY_MISMATCH if the
+	// name resolves to a different sandbox, such as a same-name replacement.
+	// An explicitly empty value is rejected. When absent, deletion targets
+	// whichever sandbox currently has the name.
+	ExpectedSandboxId *string `protobuf:"bytes,5,opt,name=expected_sandbox_id,json=expectedSandboxId,proto3,oneof" json:"expected_sandbox_id,omitempty"`
 	// Succeed with ALREADY_ABSENT if the target is missing. Does not wait for
 	// asynchronous cleanup and does not suppress authorization or parent errors.
 	AllowMissing bool `protobuf:"varint,3,opt,name=allow_missing,json=allowMissing,proto3" json:"allow_missing,omitempty"`
@@ -4534,6 +4541,13 @@ func (x *DeleteSandboxRequest) GetWorkspaceScope() *datamodelv1.WorkspaceSelecto
 func (x *DeleteSandboxRequest) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteSandboxRequest) GetExpectedSandboxId() string {
+	if x != nil && x.ExpectedSandboxId != nil {
+		return *x.ExpectedSandboxId
 	}
 	return ""
 }
@@ -18088,13 +18102,15 @@ const file_openshell_proto_rawDesc = "" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12:\n" +
 	"\x19expected_resource_version\x18\x03 \x01(\x04R\x17expectedResourceVersion\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x05 \x01(\tR\trequestId\"\xc2\x01\n" +
+	"request_id\x18\x05 \x01(\tR\trequestId\"\x8f\x02\n" +
 	"\x14DeleteSandboxRequest\x12R\n" +
 	"\x0fworkspace_scope\x18\x02 \x01(\v2).openshell.datamodel.v1.WorkspaceSelectorR\x0eworkspaceScope\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12#\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
+	"\x13expected_sandbox_id\x18\x05 \x01(\tH\x00R\x11expectedSandboxId\x88\x01\x01\x12#\n" +
 	"\rallow_missing\x18\x03 \x01(\bR\fallowMissing\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x04 \x01(\tR\trequestId\"\x9b\x01\n" +
+	"request_id\x18\x04 \x01(\tR\trequestIdB\x16\n" +
+	"\x14_expected_sandbox_id\"\x9b\x01\n" +
 	"\x12StopSandboxRequest\x12R\n" +
 	"\x0fworkspace_scope\x18\x02 \x01(\v2).openshell.datamodel.v1.WorkspaceSelectorR\x0eworkspaceScope\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
@@ -20292,6 +20308,7 @@ func file_openshell_proto_init() {
 	file_openshell_proto_msgTypes[20].OneofWrappers = []any{}
 	file_openshell_proto_msgTypes[21].OneofWrappers = []any{}
 	file_openshell_proto_msgTypes[29].OneofWrappers = []any{}
+	file_openshell_proto_msgTypes[47].OneofWrappers = []any{}
 	file_openshell_proto_msgTypes[56].OneofWrappers = []any{
 		(*ConfigSnapshotRevision_SandboxConfig)(nil),
 		(*ConfigSnapshotRevision_ProviderEnvironment)(nil),

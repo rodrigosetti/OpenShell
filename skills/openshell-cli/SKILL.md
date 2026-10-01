@@ -470,7 +470,9 @@ openshell sandbox delete --all
 `deletion accepted` means cleanup is still pending. Inspect the sandbox until
 it disappears before assuming completion. An already-absent sandbox succeeds;
 missing workspaces and authorization failures remain errors. Do not blindly
-retry by name if another process might have recreated that name.
+retry by name if another process might have recreated that name; pass
+`--expected-id <id>` (the `Id` from `openshell sandbox get`) so the delete fails
+instead of removing a same-name replacement.
 
 ### Stop and start sandboxes
 

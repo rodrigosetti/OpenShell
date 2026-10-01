@@ -117,6 +117,15 @@ export interface DeleteOptions extends SandboxWorkspaceOptions {
   allowMissing?: boolean;
 }
 
+export interface SandboxDeleteOptions extends DeleteOptions {
+  /**
+   * Delete only if the name still resolves to this sandbox ID. Otherwise the
+   * gateway fails with `FAILED_PRECONDITION` and reason
+   * `SANDBOX_IDENTITY_MISMATCH` instead of deleting a same-name replacement.
+   */
+  expectedSandboxId?: string;
+}
+
 function deletionResult(response: { outcome: number; sandboxId?: string }): DeletionResult {
   const names: Record<number, DeletionOutcome> = {
     0: 'unspecified',
@@ -1110,11 +1119,12 @@ export class SandboxClient {
     return this.list(options).all();
   }
 
-  async delete(name: string, options?: DeleteOptions | null): Promise<DeletionResult> {
+  async delete(name: string, options?: SandboxDeleteOptions | null): Promise<DeletionResult> {
     try {
       const resp = await this.grpc.deleteSandbox({
         ...namedTarget(name, options),
         allowMissing: options?.allowMissing ?? false,
+        expectedSandboxId: options?.expectedSandboxId,
       });
       return deletionResult(resp);
     } catch (e) {
