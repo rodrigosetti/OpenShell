@@ -320,7 +320,7 @@ TUI actions should parallel `openshell` CLI commands so users have familiar ment
 | CLI Command | TUI Equivalent |
 | --- | --- |
 | `openshell sandbox list` | Sandbox table on Dashboard |
-| `openshell sandbox delete --id <id>` | `[d]` on sandbox detail, then `[y]` to confirm. The request carries the selected row's sandbox ID, so a stale list cannot delete a same-name replacement. |
+| `openshell sandbox delete --id <id>` | `[d]` on sandbox detail, then `[y]` to confirm. With a gateway that supports conditional deletion, the request carries the selected row's sandbox ID so a stale list cannot delete a same-name replacement; older gateways ignore this condition. |
 | `openshell sandbox create` | `[c]` on sandbox panel to open create form |
 | `openshell sandbox connect` | `[s]` on sandbox policy view to launch SSH shell |
 | `openshell logs <name>` | `[l]` on sandbox detail to open log viewer |
