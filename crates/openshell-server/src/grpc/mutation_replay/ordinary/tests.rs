@@ -50,6 +50,7 @@ pub(in crate::grpc::mutation_replay) async fn exercise_protected_backend(url: &s
             "default".to_string(),
         )),
         allow_missing: true,
+        expected_sandbox_id: None,
         request_id: id(),
     };
     let mut tasks = Vec::new();
@@ -222,6 +223,7 @@ async fn durable_sandbox_mutations_hide_unauthorized_workspaces() {
                 name: "hidden".into(),
                 workspace_scope: Some(openshell_core::proto::workspace_selector("default")),
                 allow_missing: false,
+                expected_sandbox_id: None,
                 request_id,
             }),
         )
@@ -331,6 +333,7 @@ async fn keyed_fingerprints_fail_closed_on_missing_or_rotated_keys() {
             "default".to_string(),
         )),
         allow_missing: true,
+        expected_sandbox_id: None,
         request_id: id(),
     };
     assert_eq!(
@@ -380,6 +383,7 @@ async fn original_payload_is_identity_and_current_transformation_is_a_replay_gua
             "default".to_string(),
         )),
         allow_missing: true,
+        expected_sandbox_id: None,
         request_id: id(),
     };
     let mut effective = original.clone();

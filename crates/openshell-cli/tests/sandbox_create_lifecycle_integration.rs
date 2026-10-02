@@ -63,6 +63,11 @@ struct SandboxState {
     /// so a catalog lookup failure can be told apart from an empty catalog.
     fail_list_provider_profiles: Arc<AtomicBool>,
     deleted_names: Arc<Mutex<Vec<Vec<String>>>>,
+    deleted_expected_ids: Arc<Mutex<Vec<Option<String>>>>,
+    /// Make conditional `DeleteSandbox` calls report a same-name replacement.
+    delete_identity_mismatch: Arc<AtomicBool>,
+    /// Sandboxes returned by `ListSandboxes`.
+    listed_sandboxes: Arc<Mutex<Vec<Sandbox>>>,
     create_requests: Arc<Mutex<Vec<CreateSandboxRequest>>>,
     expose_service_requests: Arc<Mutex<Vec<openshell_core::proto::ExposeServiceRequest>>>,
     fail_delete_sandbox_message: Arc<Mutex<Option<String>>>,
@@ -245,7 +250,10 @@ impl OpenShell for TestOpenShell {
         &self,
         _request: tonic::Request<ListSandboxesRequest>,
     ) -> Result<Response<ListSandboxesResponse>, Status> {
-        Ok(Response::new(ListSandboxesResponse::default()))
+        Ok(Response::new(ListSandboxesResponse {
+            sandboxes: self.state.listed_sandboxes.lock().await.clone(),
+            ..Default::default()
+        }))
     }
 
     async fn create_sandbox_template(
@@ -375,6 +383,19 @@ impl OpenShell for TestOpenShell {
             .lock()
             .await
             .push(vec![request.name.clone()]);
+        self.state
+            .deleted_expected_ids
+            .lock()
+            .await
+            .push(request.expected_sandbox_id.clone());
+        if request.expected_sandbox_id.is_some()
+            && self.state.delete_identity_mismatch.load(Ordering::SeqCst)
+        {
+            return Err(openshell_core::rpc_error::failed_precondition(
+                "SANDBOX_IDENTITY_MISMATCH",
+                "sandbox name resolves to a different sandbox than expected_sandbox_id",
+            ));
+        }
         let delete_failure = self.state.fail_delete_sandbox_message.lock().await.take();
         if let Some(message) = delete_failure {
             return Err(Status::internal(message));
@@ -1613,6 +1634,7 @@ async fn sandbox_delete_continues_after_entry_failure() {
         &server.endpoint,
         &["failing-sandbox".to_string(), "later-sandbox".to_string()],
         false,
+        None,
         "default",
         &tls,
         "openshell",
@@ -1631,6 +1653,156 @@ async fn sandbox_delete_continues_after_entry_failure() {
             vec!["failing-sandbox".to_string()],
             vec!["later-sandbox".to_string()]
         ]
+    );
+}
+
+#[tokio::test]
+async fn sandbox_delete_forwards_expected_id_for_one_name() {
+    let server = run_server().await;
+    let tls = test_tls(&server);
+
+    run::sandbox_delete(
+        &server.endpoint,
+        &["observed".to_string()],
+        false,
+        Some("sandbox-observed"),
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect("conditional delete should succeed");
+
+    let err = run::sandbox_delete(
+        &server.endpoint,
+        &["first".to_string(), "second".to_string()],
+        false,
+        Some("sandbox-observed"),
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect_err("an expected ID cannot apply to several names");
+    assert!(err.to_string().contains("exactly one sandbox name"));
+
+    assert_eq!(
+        deleted_names(&server).await,
+        vec![vec!["observed".to_string()]]
+    );
+    assert_eq!(
+        *server.openshell.state.deleted_expected_ids.lock().await,
+        vec![Some("sandbox-observed".to_string())]
+    );
+}
+
+fn listed_sandbox(id: &str, name: &str) -> Sandbox {
+    Sandbox {
+        metadata: Some(openshell_core::proto::datamodel::v1::ObjectMeta {
+            id: id.to_string(),
+            name: name.to_string(),
+            workspace: "default".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn sandbox_delete_by_id_deletes_the_named_sandbox_with_that_id() {
+    let server = run_server().await;
+    let tls = test_tls(&server);
+    *server.openshell.state.listed_sandboxes.lock().await = vec![
+        listed_sandbox("sandbox-other", "other"),
+        listed_sandbox("sandbox-target", "target"),
+    ];
+
+    run::sandbox_delete_by_id(
+        &server.endpoint,
+        "sandbox-target",
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect("delete by ID should succeed");
+
+    assert_eq!(
+        deleted_names(&server).await,
+        vec![vec!["target".to_string()]]
+    );
+    assert_eq!(
+        *server.openshell.state.deleted_expected_ids.lock().await,
+        vec![Some("sandbox-target".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn sandbox_delete_by_id_treats_missing_or_replaced_as_deleted() {
+    let server = run_server().await;
+    let tls = test_tls(&server);
+
+    // No sandbox has the ID: nothing is sent.
+    run::sandbox_delete_by_id(
+        &server.endpoint,
+        "sandbox-gone",
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect("a missing ID is already deleted");
+    assert!(deleted_names(&server).await.is_empty());
+
+    // The sandbox is replaced between lookup and delete.
+    *server.openshell.state.listed_sandboxes.lock().await =
+        vec![listed_sandbox("sandbox-target", "target")];
+    server
+        .openshell
+        .state
+        .delete_identity_mismatch
+        .store(true, Ordering::SeqCst);
+    run::sandbox_delete_by_id(
+        &server.endpoint,
+        "sandbox-target",
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect("a replaced sandbox's ID is already deleted");
+    assert_eq!(
+        *server.openshell.state.deleted_expected_ids.lock().await,
+        vec![Some("sandbox-target".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn sandbox_delete_with_stale_expected_id_fails() {
+    let server = run_server().await;
+    let tls = test_tls(&server);
+    server
+        .openshell
+        .state
+        .delete_identity_mismatch
+        .store(true, Ordering::SeqCst);
+
+    let err = run::sandbox_delete(
+        &server.endpoint,
+        &["replaced".to_string()],
+        false,
+        Some("sandbox-original"),
+        "default",
+        &tls,
+        "openshell",
+    )
+    .await
+    .expect_err("a stale expected ID must not report success");
+
+    assert!(
+        err.to_string()
+            .contains("failed to delete 1 sandbox: replaced"),
+        "unexpected error: {err}"
     );
 }
 
@@ -2694,10 +2866,50 @@ async fn sandbox_create_deletes_shell_sessions_with_no_keep() {
         deleted_names(&server).await,
         vec![vec!["ephemeral-shell".to_string()]]
     );
+    // Cleanup deletes only the sandbox this command created.
+    assert_eq!(
+        *server.openshell.state.deleted_expected_ids.lock().await,
+        vec![Some("id-ephemeral-shell".to_string())]
+    );
     assert_eq!(
         load_last_sandbox("openshell", "default"),
         None,
         "no-keep shell sessions should not be persisted as last-used"
+    );
+}
+
+#[tokio::test]
+async fn sandbox_create_no_keep_cleanup_treats_replacement_as_gone() {
+    let server = run_server().await;
+    let fake_ssh_dir = tempfile::tempdir().unwrap();
+    let xdg_dir = tempfile::tempdir().unwrap();
+    let _env = test_env(&fake_ssh_dir, &xdg_dir);
+    let tls = test_tls(&server);
+    install_fake_ssh(&fake_ssh_dir);
+    server
+        .openshell
+        .state
+        .delete_identity_mismatch
+        .store(true, Ordering::SeqCst);
+
+    run::sandbox_create(
+        &server.endpoint,
+        "openshell",
+        run::SandboxCreateConfig {
+            name: Some("replaced-shell"),
+            keep: false,
+            tty_override: Some(true),
+            ..test_config()
+        },
+        "default",
+        &tls,
+    )
+    .await
+    .expect("a replaced ephemeral sandbox needs no further cleanup");
+
+    assert_eq!(
+        *server.openshell.state.deleted_expected_ids.lock().await,
+        vec![Some("id-replaced-shell".to_string())]
     );
 }
 

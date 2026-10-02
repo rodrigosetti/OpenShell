@@ -55,6 +55,7 @@ struct MockState {
     last_template_delete: Mutex<Option<proto::DeleteSandboxTemplateRequest>>,
     last_delete_name: Mutex<Option<String>>,
     last_delete_workspace: Mutex<Option<String>>,
+    delete_expected_ids: Mutex<Vec<Option<String>>>,
     last_stop: Mutex<Option<proto::StopSandboxRequest>>,
     last_start: Mutex<Option<proto::StartSandboxRequest>>,
     last_list_request: Mutex<Option<proto::ListSandboxesRequest>>,
@@ -551,6 +552,11 @@ impl OpenShell for TestOpenShell {
         *self.state.last_delete_name.lock().await = Some(req.name.clone());
         *self.state.last_delete_workspace.lock().await =
             selected_workspace(&req.workspace_scope).map(ToString::to_string);
+        self.state
+            .delete_expected_ids
+            .lock()
+            .await
+            .push(req.expected_sandbox_id.clone());
         if let Some(response) = &self.state.delete_response {
             return Ok(Response::new(response.clone()));
         }
@@ -1398,6 +1404,35 @@ async fn delete_sandbox_returns_server_ack() {
 
     let observed = state.last_delete_name.lock().await.clone();
     assert_eq!(observed.as_deref(), Some("doomed"));
+    assert_eq!(*state.delete_expected_ids.lock().await, vec![None]);
+}
+
+#[tokio::test]
+async fn delete_sandbox_forwards_expected_sandbox_id() {
+    let state = Arc::new(MockState::default());
+    let endpoint = start_mock(state.clone()).await;
+    let client = connect(&endpoint).await;
+
+    client
+        .workspace("staging")
+        .delete_sandbox(
+            "doomed",
+            openshell_sdk::SandboxDeleteOptions {
+                allow_missing: true,
+                expected_sandbox_id: Some("sandbox-observed".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *state.delete_expected_ids.lock().await,
+        vec![Some("sandbox-observed".to_string())]
+    );
+    assert_eq!(
+        state.last_delete_workspace.lock().await.as_deref(),
+        Some("staging")
+    );
 }
 
 #[tokio::test]

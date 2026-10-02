@@ -9,16 +9,31 @@ from types import SimpleNamespace
 
 import grpc
 import pytest
+from google.rpc import error_details_pb2, status_pb2
 
 from openshell._proto import openshell_pb2
 from openshell.errors import GatewayError
 from openshell.sandbox import Sandbox, SandboxClient
 
 
+def identity_mismatch():
+    status = status_pb2.Status(
+        code=grpc.StatusCode.FAILED_PRECONDITION.value[0],
+        message="identity mismatch",
+    )
+    status.details.add().Pack(
+        error_details_pb2.ErrorInfo(
+            reason="SANDBOX_IDENTITY_MISMATCH", domain="openshell.nvidia.com"
+        )
+    )
+    return status
+
+
 @pytest.fixture
 def cleanup_client():
     state = SimpleNamespace(
         exists=False,
+        replaced=False,
         code=grpc.StatusCode.NOT_FOUND,
         calls=[],
         closed=[],
@@ -46,6 +61,12 @@ def cleanup_client():
         assert request.name == "cleanup-test"
         assert request.workspace_scope.workspace == "default"
         assert request.allow_missing
+        assert request.expected_sandbox_id == "sandbox-1"
+        if state.replaced:
+            context.set_trailing_metadata(
+                (("grpc-status-details-bin", identity_mismatch().SerializeToString()),)
+            )
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "identity mismatch")
         if state.code == grpc.StatusCode.NOT_FOUND:
             return openshell_pb2.DeleteSandboxResponse(
                 outcome=openshell_pb2.DELETION_OUTCOME_ALREADY_ABSENT
@@ -156,3 +177,24 @@ def test_context_cleanup_handles_absence_and_intercepted_errors(
     assert state.closed == [True]
     assert managed._client is None
     assert managed._session is None
+
+
+def test_context_cleanup_does_not_delete_same_name_replacement(
+    cleanup_client, monkeypatch
+):
+    client, state = cleanup_client
+    state.exists = True
+    monkeypatch.setattr(
+        SandboxClient,
+        "from_active_cluster",
+        classmethod(lambda _cls, **_kwargs: client),
+    )
+
+    with Sandbox(workspace="default", sandbox="cleanup-test"):
+        # Another client deletes the managed sandbox and reuses its name.
+        state.replaced = True
+
+    # The gateway refuses the conditional delete, and cleanup treats the
+    # managed sandbox as already gone instead of raising or waiting.
+    assert state.calls == ["GetSandbox", "GetSandbox", "DeleteSandbox"]
+    assert state.closed == [True]

@@ -609,8 +609,12 @@ class SandboxSession:
         )
 
     def delete(self, *, allow_missing: bool = False) -> DeletionResult:
+        """Delete this session's sandbox, never a same-name replacement."""
         return self._client.delete(
-            self.sandbox.name, workspace=self._workspace, allow_missing=allow_missing
+            self.sandbox.name,
+            workspace=self._workspace,
+            allow_missing=allow_missing,
+            expected_sandbox_id=self.sandbox.id or None,
         )
 
     def stop(self) -> SandboxRef:
@@ -1048,16 +1052,28 @@ class SandboxClient:
         ]
 
     def delete(
-        self, name: str, *, workspace: str, allow_missing: bool = False
+        self,
+        name: str,
+        *,
+        workspace: str,
+        allow_missing: bool = False,
+        expected_sandbox_id: str | None = None,
     ) -> DeletionResult:
-        response = self._stub.DeleteSandbox(
-            openshell_pb2.DeleteSandboxRequest(
-                workspace_scope=_workspace_scope(workspace),
-                name=name,
-                allow_missing=allow_missing,
-            ),
-            timeout=self._timeout,
+        """Delete a sandbox by name.
+
+        With ``expected_sandbox_id``, the gateway deletes the sandbox only if
+        ``name`` still resolves to that ID. Otherwise it raises
+        ``FAILED_PRECONDITION`` with reason ``SANDBOX_IDENTITY_MISMATCH``
+        instead of deleting a same-name replacement.
+        """
+        request = openshell_pb2.DeleteSandboxRequest(
+            workspace_scope=_workspace_scope(workspace),
+            name=name,
+            allow_missing=allow_missing,
         )
+        if expected_sandbox_id is not None:
+            request.expected_sandbox_id = expected_sandbox_id
+        response = self._stub.DeleteSandbox(request, timeout=self._timeout)
         return DeletionResult(
             DeletionOutcome(response.outcome), response.sandbox_id or None
         )
@@ -1546,6 +1562,15 @@ class WorkspaceClient:
         return DeletionResult(DeletionOutcome(response.outcome))
 
 
+def _is_identity_mismatch(error: grpc.RpcError) -> bool:
+    info = getattr(error, "error_info", None)
+    return (
+        getattr(error, "code", lambda: None)() == grpc.StatusCode.FAILED_PRECONDITION
+        and info is not None
+        and info.reason == "SANDBOX_IDENTITY_MISMATCH"
+    )
+
+
 class Sandbox:
     """Context-managed sandbox session bound to one sandbox id."""
 
@@ -1669,7 +1694,14 @@ class Sandbox:
                 and self._session is not None
                 and self._client is not None
             ):
-                result = self._session.delete(allow_missing=True)
+                try:
+                    result = self._session.delete(allow_missing=True)
+                except grpc.RpcError as exc:
+                    # The managed sandbox is gone; its name now belongs to a
+                    # replacement that this context must not delete.
+                    if not _is_identity_mismatch(exc):
+                        raise
+                    result = DeletionResult(DeletionOutcome.ALREADY_ABSENT, None)
                 if result.outcome == DeletionOutcome.ACCEPTED:
                     self._client.wait_deleted(
                         self._session.sandbox.name,

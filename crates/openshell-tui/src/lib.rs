@@ -797,31 +797,23 @@ fn proto_to_log_line(log: openshell_core::proto::SandboxLogLine) -> LogLine {
 }
 
 /// Delete the currently selected sandbox.
+///
+/// The request is conditional on the selected row's sandbox ID, so a stale
+/// list never deletes a same-name replacement.
 async fn handle_sandbox_delete(app: &mut App, tx: mpsc::UnboundedSender<Event>) {
-    let sandbox_name = match app.selected_sandbox_name() {
-        Some(n) => n.to_string(),
-        None => return,
+    let Some(req) = app.selected_sandbox_delete_request() else {
+        return;
     };
-
-    // Stop any active port forwards before deleting (mirrors CLI behavior).
+    let sandbox_name = req.name.clone();
     let workspace = app.selected_sandbox_workspace();
-    if let Ok(stopped) =
-        openshell_core::forward::stop_forwards_for_sandbox(&workspace, &sandbox_name)
-        && !stopped.is_empty()
-    {
-        let ports: Vec<String> = stopped.iter().map(ToString::to_string).collect();
-        app.status_text = format!(
-            "stopped port forwards [{}] for sandbox {sandbox_name}",
-            ports.join(", ")
-        );
+    let conditional = req.expected_sandbox_id.is_some();
+
+    // Stop any active port forwards before deleting (mirrors CLI behavior). A
+    // conditional delete defers this until the gateway confirms the identity.
+    if !conditional {
+        stop_sandbox_forwards(app, &workspace, &sandbox_name);
     }
 
-    let req = openshell_core::proto::DeleteSandboxRequest {
-        workspace_scope: Some(openshell_core::proto::workspace_selector(workspace)),
-        request_id: String::new(),
-        allow_missing: true,
-        name: sandbox_name,
-    };
     match app.client.delete_sandbox(req).await {
         Ok(response) => {
             use openshell_core::proto::DeletionOutcome;
@@ -833,7 +825,19 @@ async fn handle_sandbox_delete(app: &mut App, tx: mpsc::UnboundedSender<Event>) 
                     "delete failed: unsupported deletion outcome".into()
                 }
             };
+            if conditional {
+                stop_sandbox_forwards(app, &workspace, &sandbox_name);
+            }
             app.cancel_log_stream();
+            app.screen = Screen::Dashboard;
+            app.focus = Focus::Sandboxes;
+            app.cancel_list_refresh();
+            spawn_list_refresh(app, tx);
+        }
+        Err(e) if is_sandbox_identity_mismatch(&e) => {
+            app.status_text = format!(
+                "delete refused: {sandbox_name} now refers to a different sandbox; list refreshed"
+            );
             app.screen = Screen::Dashboard;
             app.focus = Focus::Sandboxes;
             app.cancel_list_refresh();
@@ -845,6 +849,27 @@ async fn handle_sandbox_delete(app: &mut App, tx: mpsc::UnboundedSender<Event>) 
             app.focus = Focus::Sandboxes;
         }
     }
+}
+
+fn stop_sandbox_forwards(app: &mut App, workspace: &str, sandbox_name: &str) {
+    if let Ok(stopped) = openshell_core::forward::stop_forwards_for_sandbox(workspace, sandbox_name)
+        && !stopped.is_empty()
+    {
+        let ports: Vec<String> = stopped.iter().map(ToString::to_string).collect();
+        app.status_text = format!(
+            "stopped port forwards [{}] for sandbox {sandbox_name}",
+            ports.join(", ")
+        );
+    }
+}
+
+fn is_sandbox_identity_mismatch(status: &tonic::Status) -> bool {
+    use openshell_core::rpc_error::StatusExt;
+    status.code() == Code::FailedPrecondition
+        && status
+            .get_error_details()
+            .error_info()
+            .is_some_and(|info| info.reason == "SANDBOX_IDENTITY_MISMATCH")
 }
 
 // ---------------------------------------------------------------------------

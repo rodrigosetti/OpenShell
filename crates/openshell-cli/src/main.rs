@@ -1661,12 +1661,21 @@ enum SandboxCommands {
     #[command(help_template = LEAF_HELP_TEMPLATE, next_help_heading = "FLAGS")]
     Delete {
         /// Sandbox names.
-        #[arg(required_unless_present = "all", num_args = 1.., value_name = "NAME", add = ArgValueCompleter::new(completers::complete_sandbox_names))]
+        #[arg(required_unless_present_any = ["all", "id"], num_args = 1.., value_name = "NAME", add = ArgValueCompleter::new(completers::complete_sandbox_names))]
         names: Vec<String>,
 
         /// Delete all sandboxes.
         #[arg(long, conflicts_with = "names")]
         all: bool,
+
+        /// Delete only if the name still resolves to this sandbox ID. Fails
+        /// instead of deleting a same-name replacement. Requires one NAME.
+        #[arg(long = "expected-id", value_name = "ID", conflicts_with = "all")]
+        expected_id: Option<String>,
+
+        /// Delete the sandbox with this ID, never a same-name replacement.
+        #[arg(long, value_name = "ID", conflicts_with_all = ["names", "all", "expected_id"])]
+        id: Option<String>,
     },
 
     /// Stop a sandbox while preserving its workspace.
@@ -3560,16 +3569,33 @@ async fn run_async() -> Result<()> {
                             )
                             .await?;
                         }
-                        SandboxCommands::Delete { names, all } => {
-                            run::sandbox_delete(
-                                endpoint,
-                                &names,
-                                all,
-                                &cli.workspace,
-                                &tls,
-                                &ctx.name,
-                            )
-                            .await?;
+                        SandboxCommands::Delete {
+                            names,
+                            all,
+                            expected_id,
+                            id,
+                        } => {
+                            if let Some(id) = id {
+                                run::sandbox_delete_by_id(
+                                    endpoint,
+                                    &id,
+                                    &cli.workspace,
+                                    &tls,
+                                    &ctx.name,
+                                )
+                                .await?;
+                            } else {
+                                run::sandbox_delete(
+                                    endpoint,
+                                    &names,
+                                    all,
+                                    expected_id.as_deref(),
+                                    &cli.workspace,
+                                    &tls,
+                                    &ctx.name,
+                                )
+                                .await?;
+                            }
                         }
                         SandboxCommands::Stop { name } => {
                             let name = resolve_sandbox_name(name, &ctx.name, &cli.workspace)?;
@@ -5539,6 +5565,73 @@ mod tests {
                 })
             })
         ));
+    }
+
+    #[test]
+    fn sandbox_delete_accepts_expected_id_but_not_with_all() {
+        let cli = Cli::try_parse_from([
+            "openshell",
+            "sandbox",
+            "delete",
+            "my-box",
+            "--expected-id",
+            "sandbox-observed",
+        ])
+        .expect("sandbox delete --expected-id should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Delete {
+                    expected_id: Some(ref id),
+                    ..
+                })
+            }) if id == "sandbox-observed"
+        ));
+
+        let result = Cli::try_parse_from([
+            "openshell",
+            "sandbox",
+            "delete",
+            "--all",
+            "--expected-id",
+            "sandbox-observed",
+        ]);
+        assert!(result.is_err(), "--expected-id and --all should conflict");
+    }
+
+    #[test]
+    fn sandbox_delete_accepts_id_without_names() {
+        let cli =
+            Cli::try_parse_from(["openshell", "sandbox", "delete", "--id", "sandbox-observed"])
+                .expect("sandbox delete --id should parse without a name");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Sandbox {
+                command: Some(SandboxCommands::Delete {
+                    id: Some(ref id),
+                    ..
+                })
+            }) if id == "sandbox-observed"
+        ));
+
+        for conflicting in [
+            vec!["openshell", "sandbox", "delete", "my-box", "--id", "x"],
+            vec!["openshell", "sandbox", "delete", "--all", "--id", "x"],
+            vec![
+                "openshell",
+                "sandbox",
+                "delete",
+                "--id",
+                "x",
+                "--expected-id",
+                "y",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&conflicting).is_err(),
+                "{conflicting:?} should conflict"
+            );
+        }
     }
 
     #[test]

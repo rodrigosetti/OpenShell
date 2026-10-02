@@ -30,6 +30,7 @@ Recognized gateway reasons include the following.
 |---|---|---|
 | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | Correct the fields listed in `BadRequest`. |
 | `RESOURCE_VERSION_CONFLICT` | `ABORTED` | Read the resource again and construct a new conditional write. `metadata.recovery` is `REFRESH_STATE`; `current_resource_version` is included when known. |
+| `SANDBOX_IDENTITY_MISMATCH` | `FAILED_PRECONDITION` | The sandbox name resolves to a different sandbox than `expected_sandbox_id`. The expected sandbox is no longer at that name. Do not retry the deletion without the condition. |
 | `PROFILE_SOURCE_UNAVAILABLE` | `UNAVAILABLE` | Retry a profile snapshot read after at least the supplied delay. |
 | `REQUEST_ID_PAYLOAD_MISMATCH` | `FAILED_PRECONDITION` | Keep the original payload for that request ID. Inspect the original operation before submitting a different one. |
 | `REQUEST_OUTCOME_UNCERTAIN` | `FAILED_PRECONDITION` | An attempt is admitted but has no confirmed replayable success. Observe resource state and reconcile effects. Do not switch to a new ID to bypass the admission. |
@@ -273,6 +274,26 @@ the third argument; use `None` to retain name-only behavior.
 `allow_missing` is not request deduplication. A later request by name can delete
 a newly created resource with that name. Do not blindly repeat a timed-out
 deletion when names might be reused.
+
+### Conditional sandbox deletion
+
+Set `expected_sandbox_id` on `DeleteSandbox` to the sandbox ID you previously
+observed, such as `metadata.id` from `GetSandbox` or `CreateSandbox`. The gateway
+deletes the sandbox only if the name still resolves to that ID. If another
+client deleted it and created a same-name replacement, the request fails with
+`SANDBOX_IDENTITY_MISMATCH` and the replacement is not deleted. A missing name
+follows `allow_missing` as usual. An explicitly empty `expected_sandbox_id`
+returns `INVALID_ARGUMENT`. Gateways that predate this field ignore it and
+delete by name.
+
+| Client | Conditional deletion |
+|---|---|
+| CLI | `openshell sandbox delete --id ID`, or `openshell sandbox delete NAME --expected-id ID`. Cleanup after `sandbox create --no-keep` supplies the created sandbox's ID automatically. |
+| TUI | Deleting a sandbox supplies the selected row's ID automatically. |
+| Rust | `client.delete_sandbox(name, SandboxDeleteOptions { expected_sandbox_id: Some(id), ..Default::default() }).await?` |
+| Python | `client.delete(name, workspace=workspace, expected_sandbox_id=id)`. `SandboxSession.delete` and managed-sandbox cleanup supply the session's ID automatically. |
+| TypeScript | `client.sandbox.delete(name, { workspace, expectedSandboxId: id })` |
+| Go | Set `ExpectedSandboxId` on the raw `DeleteSandboxRequest`. |
 
 ### SDK migration for deletion
 

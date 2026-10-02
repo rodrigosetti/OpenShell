@@ -129,7 +129,7 @@ mod tests {
     // Service authorization also extends both schemas additively. Legacy
     // payloads retain the safe Strip default.
     const PUBLIC_RPC_SCHEMA_SHA256: &str =
-        "2e156c6ad3c8eb51bcd30dc13b173fe339b38207a1b1f98f7be2e0cad8e3bd45";
+        "44d35b2188698d08cf675d3082afe43be244238af3fd7f1d8af1f454d19a50d1";
     const DURABLE_SCHEMA_SHA256: &str =
         "38165d9d76f49fcfe98a12f241e032838a2376c1d1a87ea2796fd33b9b1a3541";
     const PUBLIC_DURABLE_OVERLAP_SHA256: &str =
