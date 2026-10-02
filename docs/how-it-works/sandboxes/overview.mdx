@@ -916,8 +916,11 @@ name, pass the ID that `openshell sandbox get` prints:
 openshell sandbox delete --id <sandbox-id>
 ```
 
-A same-name replacement created after you looked up the ID is never deleted. If
-no sandbox has that ID, the command reports it as already deleted.
+On gateways that support conditional deletion, a same-name replacement created
+after you looked up the ID is not deleted. Gateways that predate
+`expected_sandbox_id` ignore the condition and may delete the replacement, so
+upgrade the gateway before relying on this behavior. If no sandbox has that ID,
+the command reports it as already deleted.
 
 To also require that a name still refers to that ID, use `--expected-id` with
 exactly one sandbox name. If the name now belongs to a different sandbox, the
