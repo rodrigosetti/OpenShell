@@ -465,7 +465,7 @@ openshell logs my-sandbox --since 5m
 openshell sandbox delete my-sandbox
 openshell sandbox delete sandbox-1 sandbox-2 sandbox-3   # Multiple at once
 openshell sandbox delete --all
-openshell sandbox delete --id <sandbox-id>               # This sandbox, never a same-name replacement
+openshell sandbox delete --id <sandbox-id>               # Requires conditional-delete gateway support
 ```
 
 `deletion accepted` means cleanup is still pending. Inspect the sandbox until
