@@ -434,9 +434,19 @@ async fn delete_ephemeral_sandbox(
     gateway: &str,
 ) -> Result<()> {
     let name = sandbox.object_name();
-    let expected_sandbox_id = Some(sandbox.object_id()).filter(|id| !id.is_empty());
+    let expected_sandbox_id = Some(sandbox.object_id())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| miette::miette!("created sandbox is missing its ID; refusing unsafe cleanup"))?;
     let mut client = grpc_client(server, tls).await?;
-    match delete_sandbox_entry(&mut client, workspace, gateway, name, expected_sandbox_id).await {
+    match delete_sandbox_entry(
+        &mut client,
+        workspace,
+        gateway,
+        name,
+        Some(expected_sandbox_id),
+    )
+    .await
+    {
         SandboxDeleteEntry::Deleted | SandboxDeleteEntry::Replaced => Ok(()),
         SandboxDeleteEntry::Failed => aggregate_delete_failures("sandbox", &[name.to_string()]),
     }
