@@ -3270,14 +3270,14 @@ impl App {
             .sandbox_ids
             .get(self.sandbox_selected)
             .filter(|id| !id.is_empty())
-            .cloned();
+            .cloned()?;
         Some(openshell_core::proto::DeleteSandboxRequest {
             workspace_scope: Some(openshell_core::proto::workspace_selector(
                 self.selected_sandbox_workspace(),
             )),
             request_id: String::new(),
             allow_missing: true,
-            expected_sandbox_id,
+            expected_sandbox_id: Some(expected_sandbox_id),
             name,
         })
     }
