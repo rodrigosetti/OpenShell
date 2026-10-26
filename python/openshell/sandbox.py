@@ -628,11 +628,15 @@ class SandboxSession:
 
     def delete(self, *, allow_missing: bool = False) -> DeletionResult:
         """Delete this session's sandbox, never a same-name replacement."""
+        # Without an ID the delete would target whatever sandbox now has the
+        # name, so refuse instead of deleting unconditionally.
+        if not self.sandbox.id:
+            raise SandboxError("sandbox id is unknown; refusing to delete by name")
         return self._client.delete(
             self.sandbox.name,
             workspace=self._workspace,
             allow_missing=allow_missing,
-            expected_sandbox_id=self.sandbox.id or None,
+            expected_sandbox_id=self.sandbox.id,
         )
 
     def stop(self) -> SandboxRef:
