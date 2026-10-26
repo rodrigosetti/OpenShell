@@ -2805,7 +2805,8 @@ impl ComputeRuntime {
             .as_deref()
             .is_some_and(|expected| expected != candidate.object_id())
         {
-            return Err(Status::aborted(
+            return Err(openshell_core::rpc_error::aborted(
+                "SANDBOX_IDENTITY_MISMATCH",
                 "sandbox identity does not match expected_sandbox_id",
             ));
         }
@@ -2898,7 +2899,8 @@ impl ComputeRuntime {
             .as_deref()
             .is_some_and(|expected| expected != current.object_id())
         {
-            return Err(Status::aborted(
+            return Err(openshell_core::rpc_error::aborted(
+                "SANDBOX_IDENTITY_MISMATCH",
                 "sandbox identity changed before delete mutation",
             ));
         }

@@ -1703,6 +1703,14 @@ async fn handle_delete_sandbox_inner(
     if name.is_empty() {
         return Err(Status::invalid_argument("sandbox is required"));
     }
+    // An explicitly empty condition must not silently become an
+    // unconditional delete of whatever sandbox now has this name.
+    if req.expected_sandbox_id.as_deref() == Some("") {
+        return Err(openshell_core::rpc_error::invalid_argument(
+            "expected_sandbox_id",
+            "must not be empty when present",
+        ));
+    }
     let authz = authorize_workspace(
         &state.store,
         &state.admin_role,
@@ -1721,10 +1729,13 @@ async fn handle_delete_sandbox_inner(
     let workspace = super::workspace::resolve_workspace(state.store.as_ref(), &authz.workspace)
         .await?
         .name;
-    // Main's canonical public delete request contains no caller-provided
-    // identity/version fields. The compute layer still binds the resolved
-    // object ID and lifecycle guards before committing deletion.
-    let preconditions = SandboxDeletePreconditions::default();
+    // The compute layer checks the expected ID when resolving the name and
+    // again under the lifecycle lock, so a same-name replacement created
+    // before or after resolution is never deleted by this request.
+    let preconditions = SandboxDeletePreconditions {
+        expected_sandbox_id: req.expected_sandbox_id,
+        ..SandboxDeletePreconditions::default()
+    };
     let result = state
         .compute
         .delete_sandbox_allow_missing_with_preconditions(
@@ -6055,6 +6066,7 @@ mod tests {
                 authed_request(DeleteSandboxRequest {
                     request_id: String::new(),
                     allow_missing: false,
+                    expected_sandbox_id: None,
                     name: "reused-name".to_string(),
                     workspace_scope: Some(openshell_core::proto::workspace_selector(
                         "default".to_string(),
@@ -6098,6 +6110,130 @@ mod tests {
             state.telemetry.ended_sandbox_sessions(),
             [original.object_id().to_string()]
         );
+    }
+
+    fn conditional_delete(
+        name: &str,
+        expected_sandbox_id: Option<&str>,
+        allow_missing: bool,
+    ) -> Request<DeleteSandboxRequest> {
+        authed_request(DeleteSandboxRequest {
+            request_id: String::new(),
+            allow_missing,
+            name: name.to_string(),
+            expected_sandbox_id: expected_sandbox_id.map(str::to_string),
+            workspace_scope: Some(openshell_core::proto::workspace_selector(
+                "default".to_string(),
+            )),
+        })
+    }
+
+    #[tokio::test]
+    async fn delete_with_stale_expected_id_preserves_same_name_replacement() {
+        use openshell_core::rpc_error::StatusExt;
+
+        let state = test_server_state().await;
+        // A client observed `sandbox-original`; another client then deleted it
+        // and created a replacement with the same name.
+        let mut replacement = test_sandbox("reused-name", Vec::new());
+        replacement.metadata.as_mut().unwrap().id = "sandbox-replacement".to_string();
+        state.store.put_message(&replacement).await.unwrap();
+
+        for allow_missing in [false, true] {
+            let status = handle_delete_sandbox_inner(
+                &state,
+                conditional_delete("reused-name", Some("sandbox-original"), allow_missing),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(status.code(), tonic::Code::Aborted);
+            assert_eq!(
+                status.get_error_details().error_info().unwrap().reason,
+                "SANDBOX_IDENTITY_MISMATCH"
+            );
+        }
+
+        let current = state
+            .store
+            .get_message::<Sandbox>(replacement.object_id())
+            .await
+            .unwrap()
+            .expect("replacement must survive a stale conditional delete");
+        assert_eq!(current.status.unwrap().phase(), SandboxPhase::Ready);
+        assert!(state.telemetry.ended_sandbox_sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_with_matching_expected_id_deletes_that_sandbox() {
+        let state = test_server_state().await;
+        let mut sandbox = test_sandbox("conditional", Vec::new());
+        sandbox.metadata.as_mut().unwrap().id = "sandbox-expected".to_string();
+        state.store.put_message(&sandbox).await.unwrap();
+
+        let response = handle_delete_sandbox_inner(
+            &state,
+            conditional_delete("conditional", Some("sandbox-expected"), false),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.sandbox_id, "sandbox-expected");
+        assert_eq!(
+            response.outcome(),
+            openshell_core::proto::DeletionOutcome::Accepted
+        );
+        let deleting = state
+            .store
+            .get_message::<Sandbox>("sandbox-expected")
+            .await
+            .unwrap()
+            .expect("accepted deletion keeps the record until the watcher removes it");
+        assert_eq!(deleting.status.unwrap().phase(), SandboxPhase::Deleting);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_present_but_empty_expected_id() {
+        let state = test_server_state().await;
+        let sandbox = test_sandbox("conditional", Vec::new());
+        state.store.put_message(&sandbox).await.unwrap();
+
+        let status =
+            handle_delete_sandbox_inner(&state, conditional_delete("conditional", Some(""), true))
+                .await
+                .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            state
+                .store
+                .get_message::<Sandbox>(sandbox.object_id())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_with_expected_id_follows_missing_target_contract() {
+        let state = test_server_state().await;
+
+        let status =
+            handle_delete_sandbox_inner(&state, conditional_delete("gone", Some("old-id"), false))
+                .await
+                .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::NotFound);
+
+        let response =
+            handle_delete_sandbox_inner(&state, conditional_delete("gone", Some("old-id"), true))
+                .await
+                .unwrap()
+                .into_inner();
+        assert_eq!(
+            response.outcome(),
+            openshell_core::proto::DeletionOutcome::AlreadyAbsent
+        );
+        assert!(response.sandbox_id.is_empty());
     }
 
     #[tokio::test]
@@ -10163,6 +10299,7 @@ mod tests {
             non_member_request(DeleteSandboxRequest {
                 request_id: String::new(),
                 allow_missing: false,
+                expected_sandbox_id: None,
                 name: ("any").to_string(),
                 workspace_scope: Some(openshell_core::proto::workspace_selector(
                     "no-such-ws".to_string(),
