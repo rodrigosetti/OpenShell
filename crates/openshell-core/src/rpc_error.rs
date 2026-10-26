@@ -73,6 +73,16 @@ pub fn failed_precondition(reason: &str, message: impl Into<String>) -> Status {
     )
 }
 
+/// Return a concurrency conflict with a stable reason. Read fresh state before
+/// deciding whether to try again.
+pub fn aborted(reason: &str, message: impl Into<String>) -> Status {
+    Status::with_error_details(
+        Code::Aborted,
+        message,
+        ErrorDetails::with_error_info(reason, ERROR_DOMAIN, HashMap::new()),
+    )
+}
+
 /// A conditional write lost a race. Read fresh state before trying a new write.
 pub fn resource_version_conflict(message: impl Into<String>, version: Option<u64>) -> Status {
     let mut metadata = HashMap::from([("recovery".into(), "REFRESH_STATE".into())]);

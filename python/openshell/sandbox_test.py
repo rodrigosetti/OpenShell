@@ -3007,6 +3007,18 @@ def test_delete_passes_workspace_to_proto() -> None:
     assert stub.delete_request is not None
     assert _request_workspace(stub.delete_request) == "staging"
     assert not stub.delete_request.allow_missing
+    assert not stub.delete_request.HasField("expected_sandbox_id")
+
+
+def test_delete_forwards_expected_sandbox_id() -> None:
+    stub = _FakeSandboxStub()
+    client = _client_with_fake_stub(stub)
+
+    client.delete("job-1", workspace="staging", expected_sandbox_id="sb-observed")
+
+    assert stub.delete_request is not None
+    assert stub.delete_request.HasField("expected_sandbox_id")
+    assert stub.delete_request.expected_sandbox_id == "sb-observed"
 
 
 @pytest.mark.parametrize("outcome", [0, 1, 2, 3, 99])
@@ -3090,3 +3102,25 @@ def test_sandbox_session_delete_passes_workspace() -> None:
 
     assert stub.delete_request is not None
     assert _request_workspace(stub.delete_request) == "staging"
+    # A session deletes only its own sandbox, never a same-name replacement.
+    assert stub.delete_request.expected_sandbox_id == "sandbox-1"
+
+
+def test_sandbox_session_delete_refuses_unknown_id() -> None:
+    from openshell.sandbox import SandboxSession
+
+    stub = _FakeSandboxStub()
+    client = _client_with_fake_stub(stub)
+    ref = SandboxRef(
+        id="",
+        name="job-1",
+        workspace="staging",
+        status=SandboxStatusRef(phase=2, current_policy_version=0),
+    )
+    session = SandboxSession(client, ref)
+
+    with pytest.raises(SandboxError, match="sandbox id is unknown"):
+        session.delete()
+
+    # Without an ID, deleting by name could remove a same-name replacement.
+    assert stub.delete_request is None

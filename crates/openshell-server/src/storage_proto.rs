@@ -156,8 +156,11 @@ mod tests {
     // Sandbox-wide grant reporting adds TokenGrantFailureObservation to both
     // closures and TokenGrantStatus to public reports. Older rows have no grant
     // record; absent report extensions retain compatibility without a rewrite.
+    // DeleteSandboxRequest field 5 adds a public-only expected_sandbox_id
+    // precondition. Older requests decode it absent; durable schemas remain
+    // unchanged.
     const PUBLIC_RPC_SCHEMA_SHA256: &str =
-        "a91e2244a2c1a8e369efe85bd0e4f2769f0f29f6263137280fe38e8a8da3cc6e";
+        "2c52e37798a2d7eae9d610d4ae4210a0d38417f69b017b600b5ddf686b45d26e";
     const DURABLE_SCHEMA_SHA256: &str =
         "d4dc7abdb91b919db1f7be0d4652e30cbfda86f3b2ed9b59d5de1f76a2bf691d";
     const PUBLIC_DURABLE_OVERLAP_SHA256: &str =

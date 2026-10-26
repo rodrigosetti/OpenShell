@@ -30,6 +30,7 @@ export type {
   ProviderChangeOptions,
   ProviderRef,
   SandboxConfig,
+  SandboxDeleteOptions,
   SandboxFromTemplateSpec,
   SandboxPhaseName,
   SandboxPolicy,

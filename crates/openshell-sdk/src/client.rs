@@ -15,9 +15,9 @@ use crate::pagination::{Page, Pager};
 use crate::raw::AuthedGrpcClient;
 use crate::refresh::{RefreshedToken, TokenSource};
 use crate::types::{
-    DeleteOptions, DeletionResult, ExecOptions, ExecResult, Health, ListOptions, SandboxPhase,
-    SandboxRef, SandboxSpec, SandboxTemplateCreateSpec, SandboxTemplateListOptions,
-    SandboxWorkloadTemplate, WorkspaceRef,
+    DeleteOptions, DeletionResult, ExecOptions, ExecResult, Health, ListOptions,
+    SandboxDeleteOptions, SandboxPhase, SandboxRef, SandboxSpec, SandboxTemplateCreateSpec,
+    SandboxTemplateListOptions, SandboxWorkloadTemplate, WorkspaceRef,
 };
 use crate::{WatchEvent, WatchOptions, transport};
 use futures::{Stream, StreamExt};
@@ -351,13 +351,21 @@ impl OpenShellClient {
     /// Delete a sandbox by name.
     ///
     /// An accepted outcome is not completion. The result identifies the original
-    /// sandbox; a same-name replacement is not part of this operation.
-    pub async fn delete_sandbox(&self, name: &str, opts: DeleteOptions) -> Result<DeletionResult> {
+    /// sandbox; a same-name replacement is not part of this operation. Set
+    /// [`SandboxDeleteOptions::expected_sandbox_id`] to refuse deleting a
+    /// sandbox other than the one previously observed.
+    pub async fn delete_sandbox(
+        &self,
+        name: &str,
+        opts: impl Into<SandboxDeleteOptions>,
+    ) -> Result<DeletionResult> {
+        let opts = opts.into();
         let response = self
             .unary(|mut grpc| {
                 let request = proto::DeleteSandboxRequest {
                     request_id: String::new(),
                     allow_missing: opts.allow_missing,
+                    expected_sandbox_id: opts.expected_sandbox_id.clone(),
                     name: name.to_string(),
                     workspace_scope: Some(proto::workspace_selector("default")),
                 };
@@ -1067,13 +1075,21 @@ impl WorkspaceScopedClient {
     }
 
     /// Delete a sandbox by name in this workspace.
-    pub async fn delete_sandbox(&self, name: &str, opts: DeleteOptions) -> Result<DeletionResult> {
+    ///
+    /// See [`OpenShellClient::delete_sandbox`] for conditional deletion.
+    pub async fn delete_sandbox(
+        &self,
+        name: &str,
+        opts: impl Into<SandboxDeleteOptions>,
+    ) -> Result<DeletionResult> {
+        let opts = opts.into();
         let response = self
             .client
             .unary(|mut grpc| {
                 let request = proto::DeleteSandboxRequest {
                     request_id: String::new(),
                     allow_missing: opts.allow_missing,
+                    expected_sandbox_id: opts.expected_sandbox_id.clone(),
                     name: name.to_string(),
                     workspace_scope: Some(proto::workspace_selector(&self.workspace)),
                 };
